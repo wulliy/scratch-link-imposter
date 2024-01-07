@@ -1,0 +1,2 @@
+# scratch-link-imposter
+a proof-of-concept that mimics Scratch Link's network protocol to fake peripherals such as a [BBC micro:bit](https://support.microbit.org/support/solutions/articles/19000013983-what-is-a-micro-bit)

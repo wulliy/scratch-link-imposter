@@ -75,7 +75,7 @@ class Peripheral {
 		this.services = []
 
 		type = type.toLowerCase()
-		if (type !== "ble" || type !== "bt") {
+		if (type !== "ble" && type !== "bt") {
 			this.type = null
 		} else {
 			this.type = type || "ble"
@@ -171,8 +171,8 @@ class Peripheral {
 
 			ws.on("close", err => {
 				console.log(`* client disconnected, ${err}`)
-				if (notification_interval != null) {
-					clearInterval(notification_interval)
+				if (this._notification_interval != null) {
+					clearInterval(this._notification_interval)
 				}
 
 				if (err === 1005) {
@@ -199,6 +199,7 @@ class MicroBit extends Peripheral {
 
 		this.register_handler(BLE_METHOD.DISCOVER, ctx => {
 			// TODO: implement "manufacturerData" filter and check "optionalServices" array also
+			const id = ctx.id
 			const filters = ctx.params.filters
 			if (this.did_pass_filters(filters)) {
 				ctx.ble.send_response(id, null)
@@ -221,11 +222,13 @@ class MicroBit extends Peripheral {
 		})
 
 		this.register_handler(BLE_METHOD.CONNECT, ctx => {
-			ctx.ble.send_response(id, null)
+			ctx.ble.send_response(ctx.id, null)
 			console.log("--> outgoing response, successful")
 		})
 
 		this.register_handler([BLE_METHOD.READ, BLE_METHOD.WRITE], ctx => {
+			const id = ctx.id
+			const method = ctx.method
 			const params = ctx.params
 			const service_id = params.serviceId
 			const characteristic_id = params.characteristicId
@@ -272,12 +275,12 @@ class MicroBit extends Peripheral {
 		// TODO: figure out a nice way of handling these two requests...
 		this.register_handler(BLE_METHOD.START_NOTIFICATIONS, ctx => {
 			// https://github.com/scratchfoundation/scratch-vm/tree/develop/src/extensions/scratch3_gdx_for
-			ctx.ble.send_response(id, null)
+			ctx.ble.send_response(ctx.id, null)
 		})
 
 		this.register_handler(BLE_METHOD.STOP_NOTIFICATIONS, ctx => {
 			if (this._notification_interval != null) clearInterval(this._notification_interval)
-			ctx.ble.send_response(id, null)
+			ctx.ble.send_response(ctx.id, null)
 		})
 
 		this.register_handler(null, ctx => {

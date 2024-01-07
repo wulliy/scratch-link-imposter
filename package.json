@@ -1,0 +1,16 @@
+{
+  "name": "scratch-link",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "wuilly",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

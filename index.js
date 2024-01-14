@@ -19,9 +19,13 @@
 	- https://github.com/scratchfoundation/scratch-link/blob/develop/scratch-link-common/BLE/BLESession.cs#L454
 */
 
+import {WebSocketServer} from "ws"
 import JSONRPC from "./jsonrpc.js"
 import {base64_to_uint8_array, uint8_array_to_base64} from "./util.js"
-import {WebSocketServer} from "ws"
+import Logger from "./logger.js"
+
+const ARGS = process.argv.slice(1)
+const IS_SILENT = ARGS.includes("-s")
 
 const NETWORK_PROTOCOL_VERSION = "1.3" // the current version number of Scratch Link's custom network protocol
 
@@ -66,13 +70,14 @@ class Peripheral {
 		this._server = null
 		this._fallback = []
 		this._handlers = []
-		this._notification_interval = null // should probably be an array instead?
+		this._intervals = new Set()
 
 		this.id = id || 0x0000
 		this.name = name || "name"
 		this.rssi = rssi || -70
 		this.state = new Uint8Array(10) // pretend this is the peripheral state
 		this.services = []
+		this.logger = new Logger(IS_SILENT)
 
 		type = type.toLowerCase()
 		if (type !== "ble" && type !== "bt") {
@@ -89,12 +94,18 @@ class Peripheral {
 			if (filter.name != null && filter.name !== this.name ||
 				filter.namePrefix != null && !this.name.startsWith(filter.namePrefix)) {
 				return passed_filters = false
-			} else if (filter.services != null) {
+			}
+
+			if (Array.isArray(filters.services)) {
 				filter.services.forEach(service => {
 					if (!this.services.includes(service)) {
 						return passed_filters = false
 					}
 				})
+			}
+
+			if ("manufacturerData" in filter) {
+				// TODO: implement this?
 			}
 		})
 		return passed_filters
@@ -115,7 +126,7 @@ class Peripheral {
 				}
 				break
 			default:
-				console.warn("? unknown command given for display data, returning empty data")
+				this.logger.warn("? unknown command given for display data, returning empty data")
 				break
 		}
 		return str
@@ -130,20 +141,26 @@ class Peripheral {
 		})
 	}
 
+	stop_notifications() {
+		this._intervals.forEach(interval => {
+			clearInterval(interval)
+		})
+	}
+
 	run() {
 		const pathname = this.type === "ble" && SOCKET_PATH_NAME.BLE || SOCKET_PATH_NAME.BT
 		this.server = new WebSocketServer({
 			"path": pathname,
 			"port": SERVER_PORT
 		}, () => {
-			console.log("* server started")
+			this.logger.log("* server started")
 		})
 
 		this.server.on("connection", ws => {
 			this._ble = new JSONRPC(ws)
 
-			console.log("* client connected")
-			ws.on("error", console.error)
+			this.logger.log("* client connected")
+			ws.on("error", this.logger.error)
 					
 			const fallback = this._fallback
 			ws.on("message", data => {
@@ -152,10 +169,10 @@ class Peripheral {
 				const params = json.params
 				const id = json.id
 
-				console.log(`<-- incoming "${method}" request`)
+				this.logger.log(`<-- incoming "${method}" request`)
 				const handlers = this._handlers[method]
 				if (handlers == null) {
-					console.warn(`? no handler for method "${method}", calling fallback handlers instead`)
+					this.logger.warn(`? no handler for method "${method}", calling fallback handlers instead`)
 				}
 
 				// um
@@ -170,16 +187,17 @@ class Peripheral {
 			})
 
 			ws.on("close", err => {
-				console.log(`* client disconnected, ${err}`)
-				if (this._notification_interval != null) {
-					clearInterval(this._notification_interval)
+				this.logger.log(`* client disconnected, ${err}`)
+				if (ws.current_interval != null) {
+					this._intervals.delete(ws.current_interval)
+					ws.current_interval = null
 				}
 
 				if (err === 1005) {
-					console.log("* disconnection was most likely intentional")
+					this.logger.log("* disconnection was most likely intentional")
 				} else {
 					// (e.g. 1001)
-					console.log("* disconnection might've been unintentional")
+					this.logger.log("* disconnection might've been unintentional")
 				}
 			})
 		})
@@ -198,12 +216,11 @@ class MicroBit extends Peripheral {
 		})
 
 		this.register_handler(BLE_METHOD.DISCOVER, ctx => {
-			// TODO: implement "manufacturerData" filter and check "optionalServices" array also
+			// TODO: implement "optionalServices?"
 			const id = ctx.id
-			const filters = ctx.params.filters
-			if (this.did_pass_filters(filters)) {
+			if (this.did_pass_filters(ctx.params.filters)) {
 				ctx.ble.send_response(id, null)
-				console.log("--> outgoing response, successful")
+				this.logger.log("--> outgoing response, successful")
 							
 				const notif = BLE_COMMAND_ID.DID_DISCOVER_PERIPHERAL
 				ctx.ble.send_notification(notif, {
@@ -211,19 +228,19 @@ class MicroBit extends Peripheral {
 					"name": this.name,
 					"rssi": this.rssi
 				})
-				console.log(`--> outgoing "${notif}" notification`)
+				this.logger.log(`--> outgoing "${notif}" notification`)
 			} else {
 				ctx.ble.send_response(id, undefined, {
 					"code": -32000, // didn't pass filters
 					"message": "failed to pass filters"
 				})
-				console.log("--> outgoing response, unsuccessful")
+				this.logger.log("--> outgoing response, unsuccessful")
 			}
 		})
 
 		this.register_handler(BLE_METHOD.CONNECT, ctx => {
 			ctx.ble.send_response(ctx.id, null)
-			console.log("--> outgoing response, successful")
+			this.logger.log("--> outgoing response, successful")
 		})
 
 		this.register_handler([BLE_METHOD.READ, BLE_METHOD.WRITE], ctx => {
@@ -243,32 +260,34 @@ class MicroBit extends Peripheral {
 			if (characteristic_id === BLE_UUID.RX_CHAR) {
 				if (method == "read") {
 					ctx.ble.send_response(id, null)
-					console.log("--> outgoing response, successful")
+					this.logger.log("--> outgoing response, successful")
 				}
 			} else if (characteristic_id === BLE_UUID.TX_CHAR) {
 				if (method == "write") {
 					ctx.ble.send_response(id, null)
 					const str = this.decode_display_data(message)
-					console.log("* display:")
-					console.log(str)
-					console.log("--> outgoing response, successful")
+					this.logger.log("* display:")
+					this.logger.log(str)
+					this.logger.log("--> outgoing response, successful")
 				}
 			} else {
-				console.log(characteristic_id, params)
+				this.logger.log(characteristic_id, params)
 			}
 
 			if (start_notifications) {
 				// satisfy some constant polling requirement required by certain peripherals
 				const notif = BLE_COMMAND_ID.CHARACTERISTIC_DID_CHANGE
-				this._notification_interval = setInterval(() => {
+				this._intervals.add(setInterval(() => {
 					ctx.ble.send_notification(notif, {
 						"serviceId": service_id,
 						"characteristicId": characteristic_id,
 						"message": uint8_array_to_base64(this.state),
 						"encoding": "base64"
 					})
-				}, BLE_SEND_INTERVAL)
-				console.log(`--> outgoing "${notif}" notifications at ${BLE_SEND_INTERVAL}ms interval`)
+				}, BLE_SEND_INTERVAL))
+				ctx.ble.ws.current_interval = this._intervals.size // hack?
+
+				this.logger.log(`--> outgoing "${notif}" notifications at ${BLE_SEND_INTERVAL}ms interval`)
 			}
 		})
 
@@ -279,12 +298,12 @@ class MicroBit extends Peripheral {
 		})
 
 		this.register_handler(BLE_METHOD.STOP_NOTIFICATIONS, ctx => {
-			if (this._notification_interval != null) clearInterval(this._notification_interval)
+			this.stop_notifications()
 			ctx.ble.send_response(ctx.id, null)
 		})
 
 		this.register_handler(null, ctx => {
-			console.log(ctx)
+			this.logger.log(ctx)
 		})
 	}
 }

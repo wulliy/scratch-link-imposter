@@ -80,10 +80,10 @@ class Peripheral {
 		this.logger = new Logger(IS_SILENT)
 
 		type = type.toLowerCase()
-		if (type !== "ble" && type !== "bt") {
-			this.type = null
+		if (type === "bt") {
+			this.pathname = SOCKET_PATH_NAME.BT
 		} else {
-			this.type = type || "ble"
+			this.pathname = SOCKET_PATH_NAME.BLE
 		}
 	}
 
@@ -169,9 +169,8 @@ class Peripheral {
 	}
 
 	run() {
-		const pathname = this.type === "ble" && SOCKET_PATH_NAME.BLE || SOCKET_PATH_NAME.BT
 		this.server = new WebSocketServer({
-			"path": pathname,
+			"path": this.pathname,
 			"port": SERVER_PORT
 		}, () => {
 			this.logger.log("* server started")

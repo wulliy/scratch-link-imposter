@@ -89,17 +89,16 @@ class Peripheral {
 
 	did_pass_filters(filters) {
 		// this code is a tad bit ugly, but it works. should probably clean up later.
-		let passed_filters = true
-		filters.forEach(filter => {
+		for (const filter of filters) {
 			if (filter.name != null && filter.name !== this.name ||
 				filter.namePrefix != null && !this.name.startsWith(filter.namePrefix)) {
-				return passed_filters = false
+				return false
 			}
 
 			if (Array.isArray(filters.services)) {
 				filter.services.forEach(service => {
 					if (!this.services.includes(service)) {
-						return passed_filters = false
+						return false
 					}
 				})
 			}
@@ -107,8 +106,8 @@ class Peripheral {
 			if ("manufacturerData" in filter) {
 				// TODO: implement this?
 			}
-		})
-		return passed_filters
+		}
+		return true
 	}
 
 	decode_display_data(message) {
@@ -141,10 +140,32 @@ class Peripheral {
 		})
 	}
 
-	stop_notifications() {
-		this._intervals.forEach(interval => {
+	start_notifications(ctx) {
+		const params = ctx.params
+		const interval = setInterval(() => {
+			ctx.ble.send_notification(BLE_COMMAND_ID.CHARACTERISTIC_DID_CHANGE, {
+				"serviceId": params.service_id,
+				"characteristicId": params.characteristic_id,
+				"message": uint8_array_to_base64(this.state),
+				"encoding": "base64"
+			})
+		}, BLE_SEND_INTERVAL)
+		this._intervals.add(interval)
+		ctx.ble.ws.current_interval = interval
+	}
+
+	stop_notifications(ws) {
+		if (ws?.current_interval) {
+			const interval = ws.current_interval
 			clearInterval(interval)
-		})
+			this._intervals.delete(interval)
+			ws.current_interval = null
+		} else {
+			for (const interval of this._intervals) {
+				clearInterval(interval)
+				this._intervals.delete(interval)
+			}
+		}
 	}
 
 	run() {
@@ -188,10 +209,7 @@ class Peripheral {
 
 			ws.on("close", err => {
 				this.logger.log(`* client disconnected, ${err}`)
-				if (ws.current_interval != null) {
-					this._intervals.delete(ws.current_interval)
-					ws.current_interval = null
-				}
+				this.stop_notifications(ws)
 
 				if (err === 1005) {
 					this.logger.log("* disconnection was most likely intentional")
@@ -276,29 +294,19 @@ class MicroBit extends Peripheral {
 
 			if (start_notifications) {
 				// satisfy some constant polling requirement required by certain peripherals
-				const notif = BLE_COMMAND_ID.CHARACTERISTIC_DID_CHANGE
-				this._intervals.add(setInterval(() => {
-					ctx.ble.send_notification(notif, {
-						"serviceId": service_id,
-						"characteristicId": characteristic_id,
-						"message": uint8_array_to_base64(this.state),
-						"encoding": "base64"
-					})
-				}, BLE_SEND_INTERVAL))
-				ctx.ble.ws.current_interval = this._intervals.size // hack?
-
-				this.logger.log(`--> outgoing "${notif}" notifications at ${BLE_SEND_INTERVAL}ms interval`)
+				this.start_notifications(ctx)
+				this.logger.log(`--> outgoing "${BLE_COMMAND_ID.CHARACTERISTIC_DID_CHANGE}" notifications at ${BLE_SEND_INTERVAL}ms interval`)
 			}
 		})
 
-		// TODO: figure out a nice way of handling these two requests...
 		this.register_handler(BLE_METHOD.START_NOTIFICATIONS, ctx => {
-			// https://github.com/scratchfoundation/scratch-vm/tree/develop/src/extensions/scratch3_gdx_for
+			// see: https://github.com/scratchfoundation/scratch-vm/tree/develop/src/extensions/scratch3_gdx_for
+			this.start_notifications(ctx.ble.ws)
 			ctx.ble.send_response(ctx.id, null)
 		})
 
 		this.register_handler(BLE_METHOD.STOP_NOTIFICATIONS, ctx => {
-			this.stop_notifications()
+			this.stop_notifications(ctx.ble.ws)
 			ctx.ble.send_response(ctx.id, null)
 		})
 
